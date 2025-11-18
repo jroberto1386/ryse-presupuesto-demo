@@ -212,17 +212,245 @@ export default function App() {
     return id;
   };
 
-  const addLine = () => {
-    const fMes = Number(form.mes);
-    if (!fMes || fMes < 1 || fMes > 12) { alert('Mes inválido (1-12).'); return; }
-    if (!form.monto_total || Number(form.monto_total) < 0) { alert('Monto total inválido.'); return; }
-
-    const headerId = ensureHeader();
-    const id = lines.length + 1;
-    const meta = { ...form };
-    setLines(prev => [...prev, { id, header_id: headerId, mes: fMes, monto_total: Number(form.monto_total), meta }]);
-    setForm({});
+const addLine = () => {
+  // 0) Tabla para mostrar mes bonito en mensajes
+  const monthNames = {
+    1: "Enero",
+    2: "Febrero",
+    3: "Marzo",
+    4: "Abril",
+    5: "Mayo",
+    6: "Junio",
+    7: "Julio",
+    8: "Agosto",
+    9: "Septiembre",
+    10: "Octubre",
+    11: "Noviembre",
+    12: "Diciembre",
   };
+
+  // 1) Validar campos según la plantilla del tipo de gasto
+  for (const f of template) {
+    const value = form[f.name];
+
+    if (f.required && (value === undefined || value === "")) {
+      alert(`El campo "${f.label}" es obligatorio.`);
+      return;
+    }
+
+    if (f.type === "number" && value !== undefined && value !== "") {
+      const n = Number(value);
+      if (Number.isNaN(n)) {
+        alert(`El campo "${f.label}" debe ser numérico.`);
+        return;
+      }
+      if (f.min !== undefined && n < f.min) {
+        alert(`El campo "${f.label}" debe ser mayor o igual a ${f.min}.`);
+        return;
+      }
+      if (f.max !== undefined && n > f.max) {
+        alert(`El campo "${f.label}" debe ser menor o igual a ${f.max}.`);
+        return;
+      }
+    }
+  }
+
+// 2) Validar mes (guardamos siempre 1–12)
+const fMes = Number(form.mes);
+if (!fMes || fMes < 1 || fMes > 12) {
+  alert("Mes inválido (1-12).");
+  return;
+}
+
+// 3) Validar monto_total (usamos lo que ya venga en el formulario)
+const montoTotalValue = Number(form.monto_total);
+if (!montoTotalValue || montoTotalValue < 0) {
+alert("Monto total inválido.");
+return;
+}
+
+  // 4) Asegurar el header (paquete año + CC + cuenta)
+  const headerId = ensureHeader();
+
+  // 5) Evitar duplicado de mes para esta combinación
+  const yaExisteMes = lines.some(
+    (l) => l.header_id === headerId && l.mes === fMes
+  );
+  if (yaExisteMes) {
+    alert(
+      "Ya existe un renglón para ese mes en este centro de costos y cuenta. Usa edición si quieres modificarlo."
+    );
+    return;
+  }
+
+  // 6) Armar renglón base (mes original)
+  const baseRow = {
+  header_id: headerId,
+  mes: fMes,
+  monto_total: montoTotalValue,
+  meta: { ...form, mes: String(fMes), monto_total: String(montoTotalValue) },
+};
+
+
+  // Lista de renglones a insertar (1 + N meses replicados)
+  const rowsToAdd = [baseRow];
+
+  const nombreMes = monthNames[fMes] || fMes;
+
+  // 7) Preguntar si quiere copiar a varios meses adicionales
+  const quiereReplicar = window.confirm(
+    `Se agregó el renglón para el mes de ${nombreMes}.\n\n¿Quieres copiar EXACTAMENTE este mismo importe a OTROS meses adicionales?`
+  );
+
+  if (quiereReplicar) {
+    const entrada = window.prompt(
+      "Escribe los meses adicionales (1-12) separados por coma.\nEjemplo: 2,3,4,5,6,7,8,9,10,11,12"
+    );
+
+    if (entrada && entrada.trim() !== "") {
+      const partes = entrada
+        .split(",")
+        .map((p) => p.trim())
+        .filter((p) => p !== "");
+
+      const mesesNumericos = partes
+        .map((p) => Number(p))
+        .filter((n) => !Number.isNaN(n));
+
+      // Normalizar: solo 1–12, sin el mes original, sin duplicados
+      const vistos = new Set();
+      const mesesValidos = [];
+      for (const m of mesesNumericos) {
+        if (m < 1 || m > 12) continue;
+        if (m === fMes) continue; // no repetir el original
+        if (vistos.has(m)) continue;
+        vistos.add(m);
+        mesesValidos.push(m);
+      }
+
+      if (mesesValidos.length === 0) {
+        alert("No se detectaron meses adicionales válidos para replicar.");
+      } else {
+        // Para cada mes válido, si no existe ya, lo agregamos
+        const yaExistian = [];
+        const agregados = [];
+
+        for (const m of mesesValidos) {
+          const existeMes = lines.some(
+            (l) => l.header_id === headerId && l.mes === m
+          );
+          if (existeMes) {
+            yaExistian.push(m);
+          } else {
+            agregados.push(m);
+            rowsToAdd.push({
+              header_id: headerId,
+              mes: m,
+              monto_total: Number(form.monto_total),
+              meta: { ...form, mes: String(m) },
+            });
+          }
+        }
+
+        // Mensaje de resumen para el usuario
+        if (agregados.length > 0) {
+          const listaOk = agregados
+            .map((m) => monthNames[m] || m)
+            .join(", ");
+          alert(
+            `Se replicó el renglón en los meses: ${listaOk}.`
+          );
+        }
+
+        if (yaExistian.length > 0) {
+          const listaYa = yaExistian
+            .map((m) => monthNames[m] || m)
+            .join(", ");
+          alert(
+            `No se replicó en los meses ${listaYa} porque ya tenían renglones cargados para este centro de costos y cuenta.`
+          );
+        }
+      }
+    }
+  }
+
+  // 8) Insertar todos los renglones (1 o más) con IDs consecutivos
+  setLines((prev) => {
+    const next = [...prev];
+    let nextId = next.length + 1;
+    for (const row of rowsToAdd) {
+      next.push({ id: nextId++, ...row });
+    }
+    return next;
+  });
+
+  // 9) Limpiar formulario
+  setForm({});
+};
+
+// 🚀 Exportar el consolidado (aprobado/bloqueado) a CSV / Excel
+const exportToCSV = () => {
+  if (!consolidated || consolidated.length === 0) {
+    alert("No hay datos aprobados o bloqueados para exportar.");
+    return;
+  }
+
+  // Mapeo de mes numérico a nombre
+  const monthNames = {
+    1: "Enero",
+    2: "Febrero",
+    3: "Marzo",
+    4: "Abril",
+    5: "Mayo",
+    6: "Junio",
+    7: "Julio",
+    8: "Agosto",
+    9: "Septiembre",
+    10: "Octubre",
+    11: "Noviembre",
+    12: "Diciembre",
+  };
+
+  const headersCSV = ["Centro de Costos", "Cuenta", "Mes", "Monto"];
+
+  const escapeCSV = (value) => {
+    const str = String(value ?? "");
+    if (str.includes('"') || str.includes(",") || str.includes("\n")) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
+  const rows = consolidated.map((r) => {
+    const mesNombre = monthNames[r.mes] || r.mes;
+    return [
+      r.cc || "",
+      r.cuenta || "",
+      mesNombre,
+      r.monto ?? "",
+    ];
+  });
+
+  const csvContent =
+    headersCSV.join(",") +
+    "\n" +
+    rows.map((r) => r.map(escapeCSV).join(",")).join("\n");
+
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "presupuesto_2026_consolidado.csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+
+  URL.revokeObjectURL(url);
+};
+
+
+
 
   const submitHeader = () => {
     const headerId = ensureHeader();
@@ -264,6 +492,75 @@ export default function App() {
       totalMonto: lines.filter(l => l.header_id===h.id).reduce((a,b)=>a+b.monto_total,0)
     }));
   }, [headers, lines, ccState, accountsState]);
+// Mapa de avance por Centro de Costos basado en backlog
+const progressByCostCenter = useMemo(() => {
+  if (!backlog || backlog.length === 0) return [];
+
+  // Lista única de centros de costos presentes en el backlog
+  const allCC = Array.from(
+    new Set(backlog.map((b) => b.cc).filter(Boolean))
+  ).sort();
+
+  return allCC.map((cc) => {
+    const ccBacklog = backlog.filter((b) => b.cc === cc);
+    const totalPackages = ccBacklog.length;
+
+    if (totalPackages === 0) {
+      return {
+        cc,
+        totalPackages: 0,
+        submittedOrAbove: 0,
+        approvedOrLocked: 0,
+        status: "Pendiente",
+        progress: 0,
+        totalLines: 0,
+        totalAmount: 0,
+      };
+    }
+
+    const submittedOrAbove = ccBacklog.filter(
+      (b) => b.status && b.status !== "draft"
+    ).length;
+
+    const approvedOrLocked = ccBacklog.filter(
+      (b) => b.status === "approved" || b.status === "locked"
+    ).length;
+
+    const status =
+      approvedOrLocked === totalPackages
+        ? "Completado"
+        : submittedOrAbove > 0
+        ? "En proceso"
+        : "En borrador";
+
+    // % de avance = paquetes al menos "submitted" / paquetes totales
+    const progress = Math.round(
+      (submittedOrAbove / totalPackages) * 100
+    );
+
+    // Sumamos renglones y montos desde el backlog
+    const totalLines = ccBacklog.reduce(
+      (acc, b) => acc + (b.totalLineas || 0),
+      0
+    );
+    const totalAmount = ccBacklog.reduce(
+      (acc, b) => acc + (b.totalMonto || 0),
+      0
+    );
+
+    return {
+      cc,
+      totalPackages,
+      submittedOrAbove,
+      approvedOrLocked,
+      status,
+      progress,
+      totalLines,
+      totalAmount,
+    };
+  });
+}, [backlog]);
+
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
@@ -360,25 +657,54 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {template.map((f) => (
-                <div key={f.name}>
-                  <label className="block text-sm text-gray-600 mb-1">{f.label}</label>
-                  <input
-                    type={f.type}
-                    min={f.min}
-                    max={f.max}
-                    required={f.required}
-                    value={form[f.name] || ''}
-                    onChange={e=>onChangeField(f.name, e.target.value)}
-                    className="w-full border rounded px-3 py-2"
-                  />
-                </div>
-              ))}
-            </div>
+  {template.map((f) => (
+    <div key={f.name}>
+      <label className="block text-sm text-gray-600 mb-1">{f.label}</label>
+
+      {/* Campo especial: MES como lista desplegable */}
+      {f.name === "mes" ? (
+        <select
+  value={form[f.name] || ""}
+  onChange={(e) => onChangeField(f.name, e.target.value)}
+  className="w-full border rounded px-3 py-2 bg-white"
+  required={f.required}
+>
+  <option value="">Selecciona mes…</option>
+
+  <option value="1">Enero</option>
+  <option value="2">Febrero</option>
+  <option value="3">Marzo</option>
+  <option value="4">Abril</option>
+  <option value="5">Mayo</option>
+  <option value="6">Junio</option>
+  <option value="7">Julio</option>
+  <option value="8">Agosto</option>
+  <option value="9">Septiembre</option>
+  <option value="10">Octubre</option>
+  <option value="11">Noviembre</option>
+  <option value="12">Diciembre</option>
+</select>
+
+      ) : (
+        <input
+          type={f.type}
+          min={f.min}
+          max={f.max}
+          required={f.required}
+          value={form[f.name] || ""}
+          onChange={(e) => onChangeField(f.name, e.target.value)}
+          className="w-full border rounded px-3 py-2"
+        />
+      )}
+    </div>
+  ))}
+</div>
+
+
 
             <div className="flex gap-3 mt-5">
               <button onClick={addLine} className="px-4 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 shadow">Agregar renglón</button>
-              <button onClick={submitHeader} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 shadow">Enviar a revisión</button>
+        
             </div>
           </section>
 
@@ -398,8 +724,83 @@ export default function App() {
 
         {rol === 'finanzas' && (
           <div className="mt-8 grid grid-cols-1 xl:grid-cols-2 gap-6">
+          
+<section className="bg-white rounded-2xl shadow p-5">
+  <h2 className="text-lg font-semibold mb-3">Mapa de avance por Centro de Costos</h2>
+  
+  <div className="overflow-auto">
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="text-left text-gray-600">
+          <th className="py-2">Centro de Costos</th>
+          <th>Estatus</th>
+          <th>Avance</th>
+          <th>Paquetes</th>
+          <th>Renglones</th>
+          <th>Total capturado</th>
+        </tr>
+      </thead>
+      <tbody>
+        {progressByCostCenter.map((r) => (
+          <tr key={r.cc} className="border-t">
+            <td className="py-2">{r.cc}</td>
+            <td>
+              <span
+                className={`px-2 py-1 rounded text-white text-xs ${
+                  r.status === "Completado"
+                    ? "bg-emerald-600"
+                    : r.status === "En proceso"
+                    ? "bg-amber-500"
+                    : r.status === "En borrador"
+                    ? "bg-slate-500"
+                    : "bg-gray-400"
+                }`}
+              >
+                {r.status}
+              </span>
+            </td>
+            <td className="w-48">
+              <div className="flex items-center gap-2">
+                <div className="flex-1 h-2 rounded-full bg-gray-200">
+                  <div
+                    className="h-2 rounded-full bg-blue-600"
+                    style={{ width: `${r.progress}%` }}
+                  />
+                </div>
+                <span className="text-xs text-gray-700 w-10 text-right">
+                  {r.progress}%
+                </span>
+              </div>
+            </td>
+            <td>{r.totalPackages}</td>
+            <td>{r.totalLines}</td>
+            <td className="font-medium">
+              {currency(r.totalAmount)}
+            </td>
+          </tr>
+        ))}
+
+        {progressByCostCenter.length === 0 && (
+          <tr>
+            <td colSpan={6} className="py-6 text-center text-gray-500">
+              Aún no hay centros de costos con capturas.
+            </td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+  </div>
+</section>
+
             <section className="bg-white rounded-2xl shadow p-5">
               <h2 className="text-lg font-semibold mb-3">Backlog (por paquete)</h2>
+              <button
+  onClick={exportToCSV}
+  className="mb-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+>
+  Exportar consolidado a Excel (CSV)
+</button>
+
               <div className="overflow-auto">
                 <table className="w-full text-sm">
                   <thead>
